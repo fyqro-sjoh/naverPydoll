@@ -10,3 +10,10 @@ chrome-profile*/
 products*.json
 result*.png
 *.har
+
+# 메신저 토큰
+.env
+
+# Docker 시험 데이터 (프로필, 결과)
+docker-data/
+relay/

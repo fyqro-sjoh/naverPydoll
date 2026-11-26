@@ -558,6 +558,148 @@ WINDOWS_WEBGL = WebGLProfile(
     shader_precision_formats=SHADER_PRECISION_D3D11,
 )
 
+# --- Linux 컨테이너 신원 (Docker 에서 실행할 때) --------------------------------
+# pydoll examples/fingerprints.py 의 ``linux_container`` 를 서울 신원으로 고친 것.
+# 컨테이너에는 GPU 가 없어 소프트웨어 렌더러로 드러나므로, 흔한 Intel 내장 그래픽으로 보고한다.
+
+LINUX_WINDOW_WIDTH = 1920
+LINUX_WINDOW_HEIGHT = 1053
+
+LINUX_SCREEN = ScreenFingerprint(
+    width=1920,
+    height=1080,
+    avail_width=1920,
+    avail_height=1053,
+    avail_top=27,
+    avail_left=0,
+    color_depth=24,
+    pixel_depth=24,
+    device_pixel_ratio=1.0,
+    orientation_type='landscape-primary',
+    orientation_angle=0,
+)
+
+LINUX_HARDWARE = HardwareFingerprint(hardware_concurrency=4, device_memory=8, max_touch_points=0)
+
+# Dockerfile 이 설치하는 폰트와 정확히 맞춘다 (fonts-dejavu-core, fonts-liberation, fonts-noto-cjk).
+LINUX_FONTS = FontFingerprint(
+    available_fonts=[
+        'DejaVu Sans',
+        'DejaVu Sans Mono',
+        'DejaVu Serif',
+        'Liberation Mono',
+        'Liberation Sans',
+        'Liberation Serif',
+        'Noto Sans CJK KR',
+        'Noto Sans Mono CJK KR',
+        'Noto Serif CJK KR',
+    ]
+)
+
+LINUX_ABSENT_APIS = [
+    'BarcodeDetector',
+    'navigator.windowControlsOverlay',
+    'DocumentPictureInPicture',
+    'documentPictureInPicture',
+]
+
+SHADER_PRECISION_DESKTOP_GL = {
+    'vertex': {
+        'highFloat': [127, 127, 23],
+        'mediumFloat': [127, 127, 23],
+        'lowFloat': [127, 127, 23],
+        'highInt': [31, 30, 0],
+        'mediumInt': [31, 30, 0],
+        'lowInt': [31, 30, 0],
+    },
+    'fragment': {
+        'highFloat': [127, 127, 23],
+        'mediumFloat': [127, 127, 23],
+        'lowFloat': [127, 127, 23],
+        'highInt': [31, 30, 0],
+        'mediumInt': [31, 30, 0],
+        'lowInt': [31, 30, 0],
+    },
+}
+
+WEBGL_LINUX_MESA_INTEL = WebGLProfile(
+    vendor='Google Inc. (Intel)',
+    renderer='ANGLE (Intel, Mesa Intel(R) UHD Graphics 620 (KBL GT2), OpenGL 4.6)',
+    max_texture_size=16384,
+    max_renderbuffer_size=16384,
+    max_cube_map_texture_size=16384,
+    max_viewport_dims=[16384, 16384],
+    max_3d_texture_size=2048,
+    max_array_texture_layers=2048,
+    max_vertex_attribs=16,
+    max_vertex_uniform_vectors=1024,
+    max_fragment_uniform_vectors=1024,
+    max_vertex_uniform_components=4096,
+    max_fragment_uniform_components=4096,
+    max_combined_vertex_uniform_components=249856,
+    max_combined_fragment_uniform_components=249856,
+    max_varying_vectors=32,
+    max_varying_components=128,
+    max_vertex_output_components=128,
+    max_fragment_input_components=128,
+    max_texture_image_units=32,
+    max_vertex_texture_image_units=32,
+    max_combined_texture_image_units=64,
+    max_draw_buffers=8,
+    max_color_attachments=8,
+    max_samples=4,
+    max_uniform_buffer_bindings=72,
+    max_uniform_block_size=65536,
+    max_vertex_uniform_blocks=15,
+    max_fragment_uniform_blocks=15,
+    max_combined_uniform_blocks=30,
+    uniform_buffer_offset_alignment=16,
+    max_texture_lod_bias=16.0,
+    max_elements_vertices=3000,
+    max_elements_indices=3000,
+    max_transform_feedback_interleaved_components=4,
+    max_transform_feedback_separate_components=4,
+    max_transform_feedback_separate_attribs=64,
+    subpixel_bits=4,
+    aliased_point_size_range=[1, 256],
+    aliased_line_width_range=[1, 255],
+    supported_extensions=[
+        'EXT_clip_control',
+        'EXT_color_buffer_float',
+        'EXT_color_buffer_half_float',
+        'EXT_conservative_depth',
+        'EXT_depth_clamp',
+        'EXT_disjoint_timer_query_webgl2',
+        'EXT_float_blend',
+        'EXT_polygon_offset_clamp',
+        'EXT_render_snorm',
+        'EXT_texture_compression_bptc',
+        'EXT_texture_compression_rgtc',
+        'EXT_texture_filter_anisotropic',
+        'EXT_texture_mirror_clamp_to_edge',
+        'EXT_texture_norm16',
+        'KHR_parallel_shader_compile',
+        'NV_shader_noperspective_interpolation',
+        'OES_draw_buffers_indexed',
+        'OES_sample_variables',
+        'OES_shader_multisample_interpolation',
+        'OES_texture_float_linear',
+        'OVR_multiview2',
+        'WEBGL_blend_func_extended',
+        'WEBGL_clip_cull_distance',
+        'WEBGL_compressed_texture_s3tc',
+        'WEBGL_compressed_texture_s3tc_srgb',
+        'WEBGL_debug_renderer_info',
+        'WEBGL_debug_shaders',
+        'WEBGL_lose_context',
+        'WEBGL_multi_draw',
+        'WEBGL_polygon_mode',
+        'WEBGL_provoking_vertex',
+        'WEBGL_stencil_texturing',
+    ],
+    shader_precision_formats=SHADER_PRECISION_DESKTOP_GL,
+)
+
 # --- 프로필 조립 ---------------------------------------------------------------
 
 
@@ -665,12 +807,14 @@ def build_windows_seoul_profile(chrome_version: str) -> FingerprintConfig:
 def build_full_profile(chrome_version: str) -> FingerprintConfig:
     """실행 중인 OS 에 맞는 전체 프로필. OS 계층은 위장할 수 없으므로 프로필도 같은 OS 여야 한다.
 
-    Linux 등 준비된 프로필이 없는 OS 에서는 최소 프로필(언어·시간대만)을 쓴다.
+    그 밖의 OS 에서는 최소 프로필(언어·시간대만)을 쓴다.
     """
     if sys.platform == 'darwin':
         return build_macos_seoul_profile(chrome_version)
     if sys.platform == 'win32':
         return build_windows_seoul_profile(chrome_version)
+    if sys.platform.startswith('linux'):
+        return build_linux_seoul_profile(chrome_version)
     return build_minimal_profile()
 
 
@@ -678,4 +822,45 @@ def window_size() -> tuple[int, int]:
     """실행 중인 OS 의 프로필에 맞는 창 크기 (--window-size)."""
     if sys.platform == 'win32':
         return WINDOWS_WINDOW_WIDTH, WINDOWS_WINDOW_HEIGHT
+    if sys.platform.startswith('linux'):
+        return LINUX_WINDOW_WIDTH, LINUX_WINDOW_HEIGHT
     return WINDOW_WIDTH, WINDOW_HEIGHT
+
+
+def build_linux_seoul_profile(chrome_version: str) -> FingerprintConfig:
+    """Linux 데스크톱 + 서울 신원의 전체 프로필. Docker 컨테이너에서 실행할 때 쓴다."""
+    # Chrome 은 ARM Linux 에서도 UA 에 'X11; Linux x86_64' 를 고정으로 쓴다.
+    user_agent = (
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) '
+        f'Chrome/{chrome_version} Safari/537.36'
+    )
+    return FingerprintConfig(
+        user_agent=user_agent,
+        client_hints=ClientHintsFingerprint(
+            platform_version='',
+            architecture='x86',
+            bitness='64',
+            model='',
+            form_factors=['Desktop'],
+        ),
+        navigator=NavigatorFingerprint(
+            platform='Linux x86_64',
+            vendor='Google Inc.',
+            app_version=user_agent[len('Mozilla/') :],
+            pdf_viewer_enabled=True,
+        ),
+        webgl=WEBGL_LINUX_MESA_INTEL,
+        screen=LINUX_SCREEN,
+        hardware=LINUX_HARDWARE,
+        geolocation=GEOLOCATION,
+        timezone=TIMEZONE,
+        locale=LOCALE,
+        media_devices=MediaDevicesFingerprint(audio_inputs=1, audio_outputs=1, video_inputs=0),
+        media_codecs=DESKTOP_CHROMIUM_CODECS,
+        audio=AudioFingerprint(sample_rate=48000, max_channel_count=2),
+        network_connection=DESKTOP_NETWORK,
+        fonts=LINUX_FONTS,
+        platform_apis=PlatformApisFingerprint(hidden=LINUX_ABSENT_APIS),
+        media_features=MediaFeaturesFingerprint(color_gamut='srgb'),
+        permissions=DESKTOP_PERMISSIONS,
+    )

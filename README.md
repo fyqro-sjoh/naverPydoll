@@ -7,6 +7,18 @@ stealth 접속을 구성하고, 네이버 쇼핑 검색 결과의 상품 목록�
 - 시험 환경: macOS(Apple Silicon), Google Chrome 158, Python 3.12, pydoll-python 3.0.1
 - Windows용 분기도 들어 있지만 **실제 Windows 기기에서는 실행해 보지 않았습니다.**
 
+## 요약
+
+- macOS 의 실제 Chrome 을 CDP 로 제어해 네이버 가격비교 상품 목록을 받을 수 있었습니다.
+- 새 브라우저 프로필에서는 보안 확인(CAPTCHA)을 **사람이 한 번** 통과해야 합니다. 통과한 프로필을 저장해 두면
+  이후 실행은 헤드리스로도 그대로 열렸습니다.
+- 보안 확인은 자동으로 풀지 않습니다. 브라우저 창에서 직접 풀거나, Slack 으로 화면을 받아 답을 적어 보냅니다.
+  Slack 전달은 실제 보안 확인으로 통과를 확인했습니다.
+- 가격 필터, 정렬, 여러 페이지 수집이 동작합니다. 가격 필터와 정렬을 서버에서 함께 쓰는 것은 차단됩니다.
+- 출구 IP 가 매번 바뀌는 프록시에서는 목록 조회만 되고 가격 필터는 차단됩니다.
+- **Linux 신원(Docker 컨테이너 포함)은 보안 확인 단계 없이 바로 차단됩니다.**
+- 모두 검색어 1개, 하루, 수십 회 수준의 소규모 시험 결과입니다.
+
 ## 소스 구성
 
 | 파일 | 역할 |
@@ -14,6 +26,10 @@ stealth 접속을 구성하고, 네이버 쇼핑 검색 결과의 상품 목록�
 | `stealth_visit.py` | stealth 접속 샘플. 브라우저 옵션, 핑거프린트 적용, 사전 방문(warm-up), 보안 확인 대기, 접속 후 브라우저가 보고하는 값 출력 |
 | `fingerprints.py` | 일관된 핑거프린트 프로필. macOS(Apple Silicon)용과 Windows 11용, 둘 다 서울 신원 |
 | `naver_products.py` | 네이버 쇼핑 검색 결과를 JSON으로 저장. 가격 필터, 정렬 지원 |
+| `human_relay.py` | 보안 확인 화면을 메신저(Telegram, Slack)로 사람에게 보내고 답을 받아 오는 모듈 |
+| `tests/relay_mock_test.py` | 메신저 호출을 가짜 서버로 검증하는 시험 |
+| `.env.example` | 메신저 토큰 설정 예시 |
+| `Dockerfile` | 시험용 컨테이너 이미지 (Linux, 헤드리스). 아래 "Docker 시험" 참고 |
 | `requirements.txt` | 의존 패키지 |
 
 `naver_products.py`는 `stealth_visit.py`의 접속 흐름(`build_options`, `open_page`)을 그대로 가져다 씁니다.
@@ -34,6 +50,29 @@ stealth 접속을 구성하고, 네이버 쇼핑 검색 결과의 상품 목록�
 보안 확인은 **자동으로 풀지 않습니다.** 보안 확인이 뜨면 알림을 보내고 브라우저 창에서 사람이 직접 풀 때까지
 기다린 뒤 이어서 진행합니다. 헤드리스 실행 중이었다면 같은 프로필을 창 표시 모드로 다시 엽니다.
 `--user-data-dir`로 프로필을 유지하면 한 번 통과한 상태가 다음 실행에도 남습니다.
+
+### 메신저로 보안 확인 전달 (`--relay`)
+
+창 앞에 사람이 없어도 되도록, 보안 확인 화면의 스크린샷과 질문을 메신저로 보내고 사람이 답장한 답을
+입력해 제출합니다. 답은 사람이 냅니다. 헤드리스에서도 동작합니다.
+
+```bash
+cp .env.example .env                       # 토큰과 채널(대화방) ID 를 채운다
+.venv/bin/python human_relay.py telegram   # 연결 시험 (slack 도 같은 방식)
+.venv/bin/python naver_products.py "LG 그램 16인치 5060" --headless --relay telegram
+```
+
+- `telegram`: 봇 토큰과 chat id 가 필요합니다. 봇 메시지에 **답장**으로 답합니다.
+- `slack`: 봇 토큰(`chat:write`, `files:write`, `channels:history` 권한)과 채널 ID 가 필요합니다.
+  봇 메시지의 **스레드**에 답합니다.
+- `dialog`: 메신저 없이 이 Mac 화면에 스크린샷과 입력 창을 띄웁니다 (연동 전 시험용).
+- 여러 인스턴스가 동시에 보안 확인을 만나도 메신저에는 한 번에 한 건만 나갑니다.
+  틀리면 새 문제를 다시 보내며(최대 3회), `--wait-human` 초 안에 답이 없으면 작업을 중단합니다.
+- 준비 절차는 `human_relay.py` 맨 위의 설명을 참고하세요.
+
+시험 상태: Slack 은 실제 워크스페이스에서 연결 시험과 보안 확인 통과까지 확인했습니다
+(아래 "시험 내용과 결과" 6번). Telegram 은 가짜 서버로만 검증했고(`tests/relay_mock_test.py`)
+실제 토큰으로는 실행하지 않았습니다.
 
 ## 설치
 
@@ -94,6 +133,9 @@ python -m venv .venv
 .venv/bin/python naver_products.py "LG 그램 16인치 5060" --sort review-count \
     --min-price 2000000 --max-price 3000000 --local-price-filter
 
+# 여러 페이지 (페이지당 40개)
+.venv/bin/python naver_products.py "LG 그램 16인치 5060" --pages 3
+
 # 헤드리스, 프록시
 .venv/bin/python naver_products.py "LG 그램 16인치 5060" --headless
 .venv/bin/python naver_products.py "LG 그램 16인치 5060" \
@@ -107,10 +149,12 @@ python -m venv .venv
 | `--min-price`, `--max-price` | 가격 필터(원). 화면의 가격 입력란과 "가격대 검색" 버튼을 조작 |
 | `--sort` | `rank`(네이버 랭킹순, 기본), `price-asc`(낮은 가격순), `price-desc`(높은 가격순), `review-count`(리뷰 많은순), `review-score`(리뷰 좋은순), `date`(등록일순) |
 | `--local-price-filter` | 가격 필터를 서버가 아니라 받은 목록에서 적용. `--sort`와 가격 필터를 함께 쓸 때 필요 |
+| `--pages N` | 받을 페이지 수 (기본 1, 페이지당 40개). 하단의 페이지 번호 버튼을 눌러 이어서 받음 |
 | `--headless` | 창 없이 실행. 보안 확인이 뜨면 창 표시 모드로 자동 전환 |
 | `--user-data-dir 폴더` | 유지할 Chrome 프로필 (기본 `chrome-profile`) |
 | `--proxy URL` | 프록시 주소 |
 | `--wait-human 초` | 보안 확인 대기 시간 (기본 300) |
+| `--relay 방식` | 보안 확인을 사람에게 전달하는 방식: `slack`, `telegram`, `dialog`, `file`. 주지 않으면 브라우저 창에서 직접 품 |
 
 **처음 실행할 때**는 보안 확인이 뜰 가능성이 높습니다. 창에서 한 번 풀면 `chrome-profile` 폴더에 상태가 남아
 이후 실행(헤드리스 포함)은 그대로 통과했습니다.
@@ -119,7 +163,10 @@ python -m venv .venv
 
 - 필터·정렬이 없으면 페이지에 내장된 원본 데이터(`__NEXT_DATA__`)를 읽습니다.
 - 필터·정렬을 주면 화면 요소를 직접 조작하고, 그때 페이지가 호출하는 검색 API(`/api/search/all`) 응답을 읽습니다.
-- 어느 쪽이든 첫 화면분(40개)만 가져옵니다. 스크롤해야 불러오는 나머지는 가져오지 않습니다.
+- 한 페이지는 40개입니다. 스크롤할 때 상품이 늘어나 보이는 것은 화면에 늦게 그려지는 것일 뿐,
+  40개는 처음부터 페이지에 들어 있습니다.
+- `--pages N`을 주면 맨 아래까지 스크롤한 뒤 페이지 번호 버튼을 눌러 N페이지까지 받습니다.
+  중간에 막히거나 버튼이 없으면 그때까지 받은 것만 저장합니다.
 
 #### 출력 형식
 
@@ -130,6 +177,7 @@ python -m venv .venv
   "max_price": 3000000,
   "price_filter": "server",
   "sort": "네이버 랭킹순",
+  "pages": 1,
   "url": "https://search.shopping.naver.com/search/all?query=...&productSet=model",
   "fetched_at": "2026-11-26T15:51:00+09:00",
   "total": 130,
@@ -162,7 +210,7 @@ python -m venv .venv
 }
 ```
 
-- `total`: 검색 결과 전체 수, `received`: 받은 수, `count`: 저장한 수.
+- `total`: 검색 결과 전체 수, `received`: 받은 수, `count`: 저장한 수, `pages`: 요청한 페이지 수.
 - `price_filter`: `server`(네이버가 전체 결과에서 거름), `local`(받은 목록에서만 거름), `null`(필터 없음).
 - 가격비교 상품의 `url`은 id로 조립한 카탈로그 주소이며, 실제로 열리는지는 확인하지 않았습니다.
 
@@ -250,7 +298,35 @@ IP가 고정되는 프록시로 확인해 본 것은 아닙니다.
 입력란이 없는 접속 제한 페이지(HTTP 418)는 사람이 풀 수 없으므로 기다리지 않고 끝내도록 했는데,
 이 구분은 실제 418 페이지로는 시험하지 않았습니다.
 
-### 6. Windows
+### 6. 메신저로 보안 확인 전달 (Slack)
+
+| 시험 | 결과 |
+| --- | --- |
+| 가짜 서버 검증 (`tests/relay_mock_test.py`) | Telegram·Slack 요청 형태, 사람의 답만 골라 받기, 잠금 순서 통과 |
+| Slack 연결 시험 (`human_relay.py slack`) | 메시지 전송, 이미지 업로드, 스레드 답글 읽기, 결과 표시 동작 |
+| 새 프로필 + `--headless --relay slack` | HTTP 405 → Slack 으로 화면 전달 → 스레드에 적은 답을 입력·제출 → 한 번에 통과, 40개 추출 |
+
+- 사람이 창에서 직접 입력하지 않고, 받은 답을 스크립트가 입력해도 통과했습니다.
+- 헤드리스 상태에서 창 전환 없이 끝까지 처리됐습니다.
+- Slack 봇에는 `chat:write`, `files:write`, `channels:history`(비공개 채널은 `groups:history`) 권한이 모두 필요합니다.
+  하나라도 없으면 `missing_scope` 오류와 함께 필요한 권한 이름이 출력됩니다. 권한을 추가한 뒤에는 앱을 재설치해야 적용됩니다.
+- 확인하지 못한 것: 오답 후 재시도, 답이 늦게 왔을 때 문제가 유효한지, 여러 인스턴스에서 동시에 발생했을 때의
+  줄 세우기(가짜 서버 시험으로만 확인), Telegram 실제 연동.
+
+### 7. 여러 페이지 (직접 연결, 헤드리스)
+
+| 실행 | 전체 수 | 받은 수 | 결과 |
+| --- | --- | --- | --- |
+| `--pages 3` | 383 | 120 | 순위 1~120 연속, id 중복 0, 가격 누락 0 |
+| 200만~300만 원 + `--pages 2` | 130 | 80 | 범위 밖 0, id 중복 0 |
+| 낮은 가격순 + `--pages 2` | 120 | 80 | 두 페이지에 걸쳐 가격 오름차순, id 중복 0 |
+
+- 가격 필터와 정렬을 이어서 했을 때와 달리, 페이지 이동은 연속 요청에서도 막히지 않았습니다.
+  페이지 이동 전에 매번 맨 아래까지 스크롤한다는 점이 다르지만, 그것이 이유인지는 확인하지 않았습니다.
+- 4페이지 이상과 프록시 경유는 시험하지 않았습니다.
+- 실행 중 `Command timeout: ... timeout=5s` 경고가 가끔 찍히지만 결과에는 영향이 없었습니다.
+
+### 8. Windows
 
 Mac에서 확인한 것까지입니다.
 
@@ -259,7 +335,37 @@ Mac에서 확인한 것까지입니다.
 
 실제 Windows에서의 Chrome 실행, 네이버 접속 통과 여부, 경고음, 콘솔 한글 출력은 확인하지 않았습니다.
 
+### 9. Docker 시험 (Linux 컨테이너)
+
+```bash
+docker build -t naver-pydoll .
+docker run --rm -v "$PWD/docker-data:/data" naver-pydoll "LG 그램 16인치 5060"
+```
+
+Apple Silicon Mac 의 Docker(Linux arm64, Chromium 156)에서 시험했습니다.
+
+| 시험 | 결과 |
+| --- | --- |
+| 이미지 빌드, 컨테이너 안에서 브라우저 실행 | 성공 |
+| 컨테이너 안 핑거프린트 적용 (example.com) | Linux 프로필 값대로 읽힘, `webdriver: False` |
+| 컨테이너에서 네이버 가격비교 접속 (새 프로필) | **HTTP 418 차단** (보안 확인 화면이 아니라 접속 제한) |
+| 같은 시각·같은 IP, Mac 새 프로필 | HTTP 405 (보안 확인) |
+| 같은 시각·같은 IP, Mac 통과한 프로필 | HTTP 200 |
+| Mac 의 Chrome 에 Linux 프로필만 적용 (새 프로필) | **HTTP 418 차단** |
+
+마지막 줄이 원인을 가립니다. 같은 기기, 같은 IP, 같은 Chrome 에서 브라우저 신원만 Linux 로 바꾸자
+보안 확인 단계 없이 바로 차단됐습니다. 요청에서 달라진 것은 User-Agent(`X11; Linux x86_64`)와
+`sec-ch-ua-platform`(`"Linux"`)뿐입니다. 즉 **Linux 데스크톱 신원으로는 사람이 풀 기회조차 없이 막힙니다.**
+각 조건은 한 번씩만 시험했습니다.
+
+따라서 지금의 Docker 이미지로는 상품 목록을 받을 수 없습니다. 메신저 전달(`--relay`)은 보안 확인 화면이
+나와야 동작하므로 이 경우에는 쓰이지 않습니다. 컨테이너용 전달 방식(`--relay file`)과 호스트의
+`human_relay.py watch` 는 만들어 두었지만, 보안 확인이 나오지 않아 컨테이너에서는 실행되지 않았습니다.
+
 ## 알려진 문제와 주의 사항
+
+- **Linux 에서는 쓸 수 없습니다.** Linux 신원은 네이버 가격비교에서 바로 차단(HTTP 418)됩니다 (시험 9번).
+  Docker 이미지는 시험 기록용으로 남겨 두었습니다. 실제 수집은 macOS 또는 Windows 기기에서 해야 합니다.
 
 - **pydoll 3.0.1의 새 프로필 폴더 버그**: 새 `--user-data-dir` 폴더로 처음 실행하면 종료 단계에서 없는
   `Preferences.backup`을 복원하려다 예외가 나고, Chrome 프로세스가 남아 다음 실행이 실패합니다.

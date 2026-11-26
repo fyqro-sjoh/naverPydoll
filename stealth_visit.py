@@ -25,6 +25,7 @@ Stealth 구성 (3단계):
 import argparse
 import asyncio
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -67,6 +68,13 @@ def build_options(
 ) -> ChromiumOptions:
     options = ChromiumOptions()
     options.headless = headless
+    # 컨테이너 등 Chrome 이 표준 위치에 없는 환경: CHROME_BINARY 로 실행 파일을 지정한다.
+    if os.environ.get('CHROME_BINARY'):
+        options.binary_location = os.environ['CHROME_BINARY']
+    # Docker 컨테이너는 Chrome 의 샌드박스를 만들 권한이 없고 /dev/shm 도 작다.
+    if os.environ.get('CHROME_NO_SANDBOX') == '1':
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
     if user_data_dir:
         # 프로필을 디스크에 유지: 쿠키·Client Hints 설정·사람이 통과한 보안 확인이 다음 실행에도 남는다.
         # 지정하지 않으면 매번 빈 임시 프로필로 시작한다 (처음 방문하는 브라우저처럼 보임).
