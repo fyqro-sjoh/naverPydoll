@@ -72,6 +72,8 @@ async def main() -> None:
     parser.add_argument('--query', default='LG 그램 16인치 5060')
     parser.add_argument('--interval', type=int, default=3600, metavar='SECONDS')
     parser.add_argument('--max-hours', type=float, default=168, help='이 시간이 지나면 끝낸다 (기본 7일)')
+    parser.add_argument('--until', metavar='YYYY-MM-DDTHH:MM', help='이 시각에 끝낸다 (--max-hours 대신)')
+    parser.add_argument('--first-delay', type=int, default=0, metavar='SECONDS', help='첫 확인까지 기다릴 시간')
     parser.add_argument('--log', default='lifetime-log.jsonl')
     parser.add_argument(
         '--keep-going',
@@ -92,16 +94,25 @@ async def main() -> None:
         if not Path(profile).is_dir():
             raise SystemExit(f'프로필 폴더가 없습니다: {profile}')
 
-    begin = time.monotonic()
+    # 일정은 벽시계로 잰다. time.monotonic() 은 기기가 잠든 동안 멈춰서 예정 시각이 밀린다.
+    begin = time.time()
+    end = datetime.fromisoformat(args.until).timestamp() if args.until else begin + args.max_hours * 3600
     step = args.interval / len(targets)
     # 프로필별 다음 실행 시각. 간격 안에서 고르게 엇갈린다.
-    due = {profile: begin + index * step for index, (profile, _, _) in enumerate(targets)}
+    due = {
+        profile: begin + args.first_delay + index * step
+        for index, (profile, _, _) in enumerate(targets)
+    }
     settings = {profile: (identity, proxy) for profile, identity, proxy in targets}
     append(log, {'time': now(), 'event': 'start', 'profiles': args.profiles, 'interval': args.interval})
 
-    while due and time.monotonic() - begin < args.max_hours * 3600:
+    while due:
         profile = min(due, key=due.get)
-        await asyncio.sleep(max(0, due[profile] - time.monotonic()))
+        if due[profile] >= end:
+            break
+        # 짧게 나눠 잔다. 한 번에 길게 자면 기기가 잠들었다 깬 뒤 예정 시각을 지나칠 수 있다.
+        while (remaining := due[profile] - time.time()) > 0:
+            await asyncio.sleep(min(remaining, 20))
         record = await check(profile, *settings[profile], url)
         append(log, record)
         if record.get('stop') and not args.keep_going:
@@ -110,7 +121,9 @@ async def main() -> None:
             del due[profile]
             continue
         # 기기가 잠들었다 깨어나도 밀린 횟수를 몰아서 실행하지 않는다.
-        due[profile] = max(due[profile] + args.interval, time.monotonic() + step)
+        due[profile] += args.interval
+        while due[profile] < time.time():
+            due[profile] += args.interval
     append(log, {'time': now(), 'event': 'end'})
 
 

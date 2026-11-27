@@ -33,6 +33,7 @@ stealth 접속을 구성하고, 네이버 쇼핑 검색 결과의 상품 목록�
 | `.env.example` | 메신저 토큰 설정 예시 |
 | `tests/identity_check.py` | 브라우저가 내보내는 헤더와 스크립트 값을 외부 접속 없이 확인하는 시험 |
 | `tests/profile_lifetime.py` | 통과된 프로필이 얼마나 유지되는지 주기적으로 확인하는 시험 |
+| `tests/lifetime_report.py` | 유지 기간 확인 기록을 요약. `--slack` 을 주면 Slack 채널로 전송 |
 | `docs/engine_plan.md` | 여러 프로필을 동시에 운영하는 수집 서비스와 외부 API 의 설계 (미구현) |
 | `docs/windows_identity_test.md` | Linux 컨테이너와 Mac 에서 Windows 신원으로 접속한 시험의 계획과 결과 |
 | `requirements.txt` | 의존 패키지 |

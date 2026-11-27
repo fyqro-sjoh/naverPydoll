@@ -23,3 +23,4 @@ lifetime*.jsonl
 lifetime*.out
 
 .DS_Store
+com.naverpydoll.*.out
