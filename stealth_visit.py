@@ -24,11 +24,17 @@ Stealth 구성 (3단계):
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
+import shutil
+import socket
 import subprocess
 import sys
+import tempfile
+from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urljoin
 
 from pydoll import Chrome, ChromiumOptions
 
@@ -63,18 +69,95 @@ STEALTH_CHECK_JS = """
 """
 
 
+# --- 프로필 폴더가 계속 커지는 것을 막는 설정 -----------------------------------
+# 프로필에서 통과 상태를 담는 것은 쿠키·설정 등 수 MB 뿐이고, 나머지 대부분은 캐시다.
+#   1. 웹 캐시 크기에 상한을 둔다 (--disk-cache-size).
+#   2. 웹 캐시를 프로필 밖 임시 폴더에 둔다 (--disk-cache-dir). 실행이 끝나면 지운다.
+#   4. 실행이 끝나면 프로필 안에 남는 캐시성 폴더를 지운다.
+DISK_CACHE_BYTES = 50 * 1024 * 1024
+
+# 지워도 Chrome 이 다시 만드는 캐시 폴더 (프로필 폴더 기준 상대 경로).
+# 쿠키, Preferences, Local State, 사이트 저장소, Chrome 이 내려받은 구성요소는 건드리지 않는다.
+PROFILE_CACHE_DIRS = (
+    'Default/Cache',
+    'Default/Code Cache',
+    'Default/GPUCache',
+    'Default/DawnWebGPUCache',
+    'Default/DawnGraphiteCache',
+    'GPUPersistentCache',
+    'GraphiteDawnCache',
+    'GrShaderCache',
+    'ShaderCache',
+)
+
+
+def cache_dir_for(user_data_dir: str) -> Path:
+    """이 프로필 전용 웹 캐시 폴더 (프로필 밖, 시스템 임시 폴더 아래)."""
+    profile_dir = Path(user_data_dir).resolve()
+    digest = hashlib.sha1(str(profile_dir).encode()).hexdigest()[:10]
+    return Path(tempfile.gettempdir()) / f'naver-pydoll-cache-{profile_dir.name}-{digest}'
+
+
+def profile_in_use(profile_dir: Path) -> bool:
+    """다른 Chrome 이 이 프로필을 쓰고 있는지.
+
+    macOS: SingletonLock 은 '호스트이름-PID' 를 가리키는 링크다. Chrome 이 종료돼도 링크가
+    남는 경우가 있으므로, 링크의 존재가 아니라 그 PID 가 살아 있는지를 본다.
+    Windows: 실행 중에는 lockfile 을 Chrome 이 잡고 있어 열 수 없다.
+    """
+    lock = profile_dir / 'SingletonLock'
+    if lock.is_symlink():
+        host, _, pid = os.readlink(lock).rpartition('-')
+        if host != socket.gethostname() or not pid.isdigit():
+            return True  # 다른 기기의 것이거나 형식을 모르면 안전하게 사용 중으로 본다
+        try:
+            os.kill(int(pid), 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+    lockfile = profile_dir / 'lockfile'
+    if lockfile.exists():
+        try:
+            with open(lockfile, 'r+b'):
+                return False
+        except OSError:
+            return True
+    return False
+
+
+def clean_profile(user_data_dir: str) -> None:
+    """실행이 끝난 뒤 프로필 밖 웹 캐시와 프로필 안의 캐시성 폴더를 지운다."""
+    profile_dir = Path(user_data_dir).resolve()
+    if profile_in_use(profile_dir):
+        # Chrome 이 아직 이 프로필을 쓰고 있다. 쓰는 중에 지우면 프로필이 깨질 수 있다.
+        print('  ※ Chrome 이 아직 실행 중이어서 프로필 캐시 정리를 건너뜁니다.', flush=True)
+        return
+    shutil.rmtree(cache_dir_for(user_data_dir), ignore_errors=True)
+    for name in PROFILE_CACHE_DIRS:
+        shutil.rmtree(profile_dir / name, ignore_errors=True)
+
+
+@asynccontextmanager
+async def launch(headless: bool, user_data_dir: str | None = None, proxy: str | None = None):
+    """Chrome 을 띄우고, 끝나면 프로필의 캐시를 정리한다."""
+    try:
+        async with Chrome(options=build_options(headless, user_data_dir, proxy)) as browser:
+            yield browser
+    finally:
+        if user_data_dir:
+            clean_profile(user_data_dir)
+
+
 def build_options(
     headless: bool, user_data_dir: str | None = None, proxy: str | None = None
 ) -> ChromiumOptions:
     options = ChromiumOptions()
     options.headless = headless
-    # 컨테이너 등 Chrome 이 표준 위치에 없는 환경: CHROME_BINARY 로 실행 파일을 지정한다.
+    # Chrome 이 표준 위치에 없으면 CHROME_BINARY 로 실행 파일을 지정한다.
     if os.environ.get('CHROME_BINARY'):
         options.binary_location = os.environ['CHROME_BINARY']
-    # Docker 컨테이너는 Chrome 의 샌드박스를 만들 권한이 없고 /dev/shm 도 작다.
-    if os.environ.get('CHROME_NO_SANDBOX') == '1':
-        options.add_argument('--no-sandbox')
-        options.add_argument('--disable-dev-shm-usage')
     if user_data_dir:
         # 프로필을 디스크에 유지: 쿠키·Client Hints 설정·사람이 통과한 보안 확인이 다음 실행에도 남는다.
         # 지정하지 않으면 매번 빈 임시 프로필로 시작한다 (처음 방문하는 브라우저처럼 보임).
@@ -87,6 +170,9 @@ def build_options(
         if not preferences.exists():
             preferences.parent.mkdir(parents=True, exist_ok=True)
             preferences.write_text('{}', encoding='utf-8')
+        # 웹 캐시는 프로필 밖에 두고 크기를 제한한다 (프로필 폴더가 계속 커지는 것을 막는다).
+        options.add_argument(f'--disk-cache-dir={cache_dir_for(user_data_dir)}')
+        options.add_argument(f'--disk-cache-size={DISK_CACHE_BYTES}')
     options.webrtc_leak_protection = True  # 프록시 사용 시 실제 IP가 WebRTC로 새는 것을 방지
     options.set_accept_languages(','.join(LANGUAGES))  # HTTP Accept-Language 헤더
     options.block_notifications = True
@@ -111,12 +197,25 @@ async def real_chrome_version(browser: Chrome) -> str:
 
 
 def document_status(entries: list, url: str) -> int | None:
-    """기록된 요청 중 대상 URL 문서 요청의 마지막 HTTP 상태 코드."""
-    target = url.split('#', 1)[0].rstrip('/')
-    statuses = [
-        e['response']['status'] for e in entries if e['request']['url'].rstrip('/') == target
-    ]
-    return statuses[-1] if statuses else None
+    """기록된 요청 중 대상 URL 문서 요청의 마지막 HTTP 상태 코드.
+
+    3xx 로 다른 주소로 넘겨졌으면 따라가서 마지막 문서의 상태를 돌려주고, 거친 경로를 출력한다.
+    """
+    current = url.split('#', 1)[0].rstrip('/')
+    status = None
+    for _ in range(10):
+        matches = [e for e in entries if e['request']['url'].split('#', 1)[0].rstrip('/') == current]
+        if not matches:
+            break
+        response = matches[-1]['response']
+        status = response['status']
+        location = response.get('redirectURL') or ''
+        if not (300 <= status < 400 and location):
+            break
+        location = urljoin(current, location)
+        print(f'Redirect: {status} → {location}', flush=True)
+        current = location.split('#', 1)[0].rstrip('/')
+    return status
 
 
 # 사람이 직접 처리할 수 있는 확인 화면인지: 입력란·버튼·iframe(위젯)이 있으면 그렇다고 본다.
@@ -185,11 +284,11 @@ async def open_page(
         fingerprint = build_full_profile(await real_chrome_version(browser))
     else:
         fingerprint = build_minimal_profile()
-        if headless:
-            # 헤드리스 Chrome 은 UA 에 "HeadlessChrome" 을 넣어 스스로를 드러낸다.
-            # 실제 UA 에서 그 표식만 지운다 (전체 프로필은 UA 를 직접 만들므로 불필요).
-            real_ua = (await browser.get_version())['userAgent']
-            fingerprint['user_agent'] = real_ua.replace('HeadlessChrome', 'Chrome')
+    if headless and not fingerprint.get('user_agent'):
+        # 헤드리스 Chrome 은 UA 에 "HeadlessChrome" 을 넣어 스스로를 드러낸다.
+        # 프로필이 UA 를 정하지 않으면(최소 프로필) 실제 UA 에서 그 표식만 지운다.
+        real_ua = (await browser.get_version())['userAgent']
+        fingerprint['user_agent'] = real_ua.replace('HeadlessChrome', 'Chrome')
 
     # 반드시 이동 "전에" 적용: 오버라이드는 새 문서가 만들어질 때마다 주입된다.
     await tab.apply_fingerprint(fingerprint)
@@ -242,7 +341,7 @@ async def visit(
     wait_human: int = 300,
     proxy: str | None = None,
 ) -> None:
-    async with Chrome(options=build_options(headless, user_data_dir, proxy)) as browser:
+    async with launch(headless, user_data_dir, proxy) as browser:
         tab, _ = await open_page(
             browser,
             url,

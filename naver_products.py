@@ -42,10 +42,8 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
-from pydoll import Chrome
-
 from human_relay import RELAYS, RelayError, RelayLock, create_relay
-from stealth_visit import build_options, needs_human, open_page, setup_console
+from stealth_visit import launch, needs_human, open_page, setup_console
 
 SEARCH_URL = 'https://search.shopping.naver.com/search/all?query={query}'
 CATALOG_URL = 'https://search.shopping.naver.com/catalog/{id}'
@@ -370,7 +368,7 @@ async def fetch(
     pages: int = 1,
     relay=None,
 ) -> tuple[int | None, list[dict]]:
-    async with Chrome(options=build_options(headless, user_data_dir, proxy)) as browser:
+    async with launch(headless, user_data_dir, proxy) as browser:
         tab, status = await open_page(
             browser,
             url,
@@ -409,7 +407,10 @@ async def fetch(
             response = await tab.execute_script(NEXT_DATA_JS, return_by_value=True)
             raw = response['result']['result'].get('value') or ''
             if not raw:
-                raise SystemExit('페이지에서 상품 데이터(__NEXT_DATA__)를 찾지 못했습니다.')
+                raise SystemExit(
+                    '페이지에서 상품 데이터(__NEXT_DATA__)를 찾지 못했습니다.\n'
+                    f'  현재 주소: {await tab.current_url()}\n  제목: {await tab.title()}'
+                )
             total, products = parse_products(json.loads(raw))
 
         # 2페이지부터는 하단의 페이지 번호 버튼을 눌러 받는다.

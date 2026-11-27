@@ -6,9 +6,6 @@
     telegram : Telegram 봇. 환경 변수 TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
     slack    : Slack 봇.    환경 변수 SLACK_BOT_TOKEN, SLACK_CHANNEL_ID
     dialog   : 메신저 없이 이 Mac 의 화면에 스크린샷과 입력 창을 띄운다 (연동 전 시험용, macOS 전용)
-    file     : 폴더(RELAY_DIR, 기본 relay)에 captcha.png 와 question.txt 를 쓰고 answer.txt 를 기다린다.
-               Docker 컨테이너 시험용. 호스트에서 `human_relay.py watch 폴더` 를 띄워 두면
-               그 폴더를 지켜보다가 입력 창을 띄우고 답을 answer.txt 로 써 준다.
 
 환경 변수는 실행 폴더의 .env 파일에 적어 두어도 된다 (.env.example 참고).
 
@@ -293,42 +290,7 @@ class DialogRelay:
         handle['path'].unlink(missing_ok=True)
 
 
-class FileRelay:
-    """폴더에 스크린샷과 질문을 쓰고, 같은 폴더의 answer.txt 를 답으로 읽는다 (컨테이너 시험용)."""
-
-    name = 'file'
-
-    def __init__(self, directory: str):
-        self.dir = Path(directory)
-        self.dir.mkdir(parents=True, exist_ok=True)
-
-    async def send(self, image: bytes, caption: str) -> dict:
-        (self.dir / 'answer.txt').unlink(missing_ok=True)
-        (self.dir / 'status.txt').unlink(missing_ok=True)
-        (self.dir / 'captcha.png').write_bytes(image)
-        # question.txt 를 마지막에 쓴다. 지켜보는 쪽은 이 파일이 생기면 새 문제로 본다.
-        (self.dir / 'question.txt').write_text(caption, encoding='utf-8')
-        return {'caption': caption}
-
-    async def wait_answer(self, handle: dict, timeout: int) -> str | None:
-        answer_file = self.dir / 'answer.txt'
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            await asyncio.sleep(1)
-            if answer_file.exists():
-                answer = clean_answer(answer_file.read_text(encoding='utf-8'))
-                answer_file.unlink(missing_ok=True)
-                if answer:
-                    return answer
-        return None
-
-    async def update(self, handle: dict, status: str) -> None:
-        (self.dir / 'question.txt').unlink(missing_ok=True)
-        (self.dir / 'status.txt').write_text(status, encoding='utf-8')
-        print(f'  [보안 확인] {status}', flush=True)
-
-
-RELAYS = ('telegram', 'slack', 'dialog', 'file')
+RELAYS = ('telegram', 'slack', 'dialog')
 
 
 def create_relay(name: str):
@@ -340,8 +302,6 @@ def create_relay(name: str):
         return SlackRelay(require_env('SLACK_BOT_TOKEN'), require_env('SLACK_CHANNEL_ID'))
     if name == 'dialog':
         return DialogRelay()
-    if name == 'file':
-        return FileRelay(os.environ.get('RELAY_DIR') or 'relay')
     raise SystemExit(f'알 수 없는 전달 방식: {name}')
 
 
@@ -378,49 +338,14 @@ async def connection_test(name: str, timeout: int) -> None:
     print(f'받은 답장: {answer}')
 
 
-async def watch(directory: str, timeout: int) -> None:
-    """file 방식의 폴더를 지켜보다가, 문제가 생기면 이 Mac 에 입력 창을 띄워 답을 써 준다."""
-    folder = Path(directory)
-    dialog = DialogRelay()
-    print(f'{folder} 를 지켜봅니다. 끝내려면 Ctrl+C.', flush=True)
-    seen = None
-    while True:
-        await asyncio.sleep(1)
-        question_file = folder / 'question.txt'
-        if not question_file.exists():
-            seen = None
-            continue
-        stamp = question_file.stat().st_mtime
-        if stamp == seen:
-            continue
-        seen = stamp
-        caption = question_file.read_text(encoding='utf-8')
-        print('\a새 보안 확인이 도착했습니다.', flush=True)
-        handle = await dialog.send((folder / 'captcha.png').read_bytes(), caption)
-        answer = await dialog.wait_answer(handle, timeout)
-        handle['path'].unlink(missing_ok=True)
-        if answer:
-            (folder / 'answer.txt').write_text(answer, encoding='utf-8')
-            print('답을 전달했습니다.', flush=True)
-        else:
-            print('답이 입력되지 않았습니다.', flush=True)
-
-
 if __name__ == '__main__':
     import argparse
 
-    parser = argparse.ArgumentParser(description='메신저 연결 시험 / file 방식 폴더 지켜보기')
-    parser.add_argument('relay', choices=[*RELAYS, 'watch'])
-    parser.add_argument('directory', nargs='?', default='relay', help='watch 할 폴더')
+    parser = argparse.ArgumentParser(description='메신저 연결 시험')
+    parser.add_argument('relay', choices=RELAYS)
     parser.add_argument('--timeout', type=int, default=120, metavar='SECONDS')
     args = parser.parse_args()
-    if args.relay == 'watch':
-        try:
-            asyncio.run(watch(args.directory, args.timeout))
-        except KeyboardInterrupt:
-            pass
-    else:
-        try:
-            asyncio.run(connection_test(args.relay, args.timeout))
-        except RelayError as error:
-            raise SystemExit(f'연결 시험 실패: {error}') from None
+    try:
+        asyncio.run(connection_test(args.relay, args.timeout))
+    except RelayError as error:
+        raise SystemExit(f'연결 시험 실패: {error}') from None

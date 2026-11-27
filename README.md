@@ -16,7 +16,9 @@ stealth 접속을 구성하고, 네이버 쇼핑 검색 결과의 상품 목록�
   Slack 전달은 실제 보안 확인으로 통과를 확인했습니다.
 - 가격 필터, 정렬, 여러 페이지 수집이 동작합니다. 가격 필터와 정렬을 서버에서 함께 쓰는 것은 차단됩니다.
 - 출구 IP 가 매번 바뀌는 프록시에서는 목록 조회만 되고 가격 필터는 차단됩니다.
-- **Linux 신원(Docker 컨테이너 포함)은 보안 확인 단계 없이 바로 차단됩니다.**
+- **Linux 에서는 쓸 수 없습니다.** Linux 신원은 보안 확인 단계 없이 바로 차단되고, Linux 컨테이너에서
+  Windows 신원으로 바꿔도 로그인 페이지로 넘겨져 목록을 받지 못했습니다. Docker 지원은 코드에서 뺐습니다.
+- Mac 에서 Windows 신원(`FINGERPRINT_OS=win32`)으로 바꿔도 macOS 신원과 같은 결과였습니다.
 - 모두 검색어 1개, 하루, 수십 회 수준의 소규모 시험 결과입니다.
 
 ## 소스 구성
@@ -29,7 +31,10 @@ stealth 접속을 구성하고, 네이버 쇼핑 검색 결과의 상품 목록�
 | `human_relay.py` | 보안 확인 화면을 메신저(Telegram, Slack)로 사람에게 보내고 답을 받아 오는 모듈 |
 | `tests/relay_mock_test.py` | 메신저 호출을 가짜 서버로 검증하는 시험 |
 | `.env.example` | 메신저 토큰 설정 예시 |
-| `Dockerfile` | 시험용 컨테이너 이미지 (Linux, 헤드리스). 아래 "Docker 시험" 참고 |
+| `tests/identity_check.py` | 브라우저가 내보내는 헤더와 스크립트 값을 외부 접속 없이 확인하는 시험 |
+| `tests/profile_lifetime.py` | 통과된 프로필이 얼마나 유지되는지 주기적으로 확인하는 시험 |
+| `docs/engine_plan.md` | 여러 프로필을 동시에 운영하는 수집 서비스와 외부 API 의 설계 (미구현) |
+| `docs/windows_identity_test.md` | Linux 컨테이너와 Mac 에서 Windows 신원으로 접속한 시험의 계획과 결과 |
 | `requirements.txt` | 의존 패키지 |
 
 `naver_products.py`는 `stealth_visit.py`의 접속 흐름(`build_options`, `open_page`)을 그대로 가져다 씁니다.
@@ -79,7 +84,7 @@ cp .env.example .env                       # 토큰과 채널(대화방) ID 를 
 Python 3.10 이상과 Google Chrome이 필요합니다.
 
 ```bash
-# macOS / Linux
+# macOS
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
@@ -154,7 +159,13 @@ python -m venv .venv
 | `--user-data-dir 폴더` | 유지할 Chrome 프로필 (기본 `chrome-profile`) |
 | `--proxy URL` | 프록시 주소 |
 | `--wait-human 초` | 보안 확인 대기 시간 (기본 300) |
-| `--relay 방식` | 보안 확인을 사람에게 전달하는 방식: `slack`, `telegram`, `dialog`, `file`. 주지 않으면 브라우저 창에서 직접 품 |
+| `--relay 방식` | 보안 확인을 사람에게 전달하는 방식: `slack`, `telegram`, `dialog`. 주지 않으면 브라우저 창에서 직접 품 |
+
+환경 변수 `FINGERPRINT_OS=win32` 를 주면 Mac 에서도 Windows 신원으로 엽니다 (`darwin` 또는 `win32`. 주지 않으면
+실행 기기의 OS). 신원은 프로필을 만들 때 정하고 바꾸지 않는 것을 권합니다.
+
+실행이 끝나면 프로필 폴더 안의 캐시를 지웁니다. 디스크 캐시는 프로필 밖(임시 폴더)에 두고 50MB 로 제한합니다.
+쿠키와 통과 상태는 지우지 않습니다 (시험 10번).
 
 **처음 실행할 때**는 보안 확인이 뜰 가능성이 높습니다. 창에서 한 번 풀면 `chrome-profile` 폴더에 상태가 남아
 이후 실행(헤드리스 포함)은 그대로 통과했습니다.
@@ -335,37 +346,61 @@ Mac에서 확인한 것까지입니다.
 
 실제 Windows에서의 Chrome 실행, 네이버 접속 통과 여부, 경고음, 콘솔 한글 출력은 확인하지 않았습니다.
 
-### 9. Docker 시험 (Linux 컨테이너)
+### 9. Linux 컨테이너와 브라우저 신원
+
+Docker(Linux arm64, Chromium 156)와 Mac 의 Chrome 에서 브라우저 신원을 바꿔 가며 시험했습니다.
+모두 같은 IP 의 직접 연결, 새 프로필입니다. 자세한 기록은 `docs/windows_identity_test.md` 에 있습니다.
+
+| 실행 환경 | 신원 | 결과 |
+| --- | --- | --- |
+| Mac | macOS | HTTP 405 (보안 확인). 사람이 풀면 이후 200 |
+| Mac | Windows (`FINGERPRINT_OS=win32`) | HTTP 405 → Slack 답으로 통과, 재접속 200 |
+| Mac | Linux | **HTTP 418 차단** |
+| Linux 컨테이너 | Linux | **HTTP 418 차단** (두 날짜에 각 1회) |
+| Linux 컨테이너 | Windows | **HTTP 307 → 네이버 로그인 페이지**. 목록 못 받음 |
+
+- Linux 신원으로는 사람이 풀 기회 없이 막힙니다.
+- Linux 컨테이너에서는 신원을 Windows 로 바꿔도 목록을 받지 못했습니다. 같은 Windows 신원이 Mac 에서는
+  통과했으므로 Linux 컨테이너 쪽 요인인데, 그것이 무엇인지(Chromium 빌드, arm64, 소프트웨어 렌더링, 폰트)는
+  가리지 못했습니다.
+- 조건별 1~2회의 시험입니다. x86 서버의 정식 Chrome 은 시험하지 않았습니다.
+
+이 결과에 따라 Docker 이미지와 Linux 프로필, 컨테이너용 전달 방식(`--relay file`)은 코드에서 뺐습니다.
+이전 코드는 git 기록(커밋 `922c02a`)에 남아 있습니다.
+
+### 10. 프로필 폴더 용량
+
+같은 프로필로 반복 실행하면 Chrome 의 캐시가 쌓여 폴더가 계속 커집니다.
+
+| 조치 | 결과 |
+| --- | --- |
+| 디스크 캐시를 프로필 밖으로 옮기고 50MB 로 제한, 실행 후 프로필 안의 캐시 폴더 삭제 | 205MB → 144MB. 이후 반복 실행에도 144MB 유지, 접속은 계속 200 |
+| 새 프로필에서 캐시와 내려받은 구성 요소까지 삭제 (시험만 함, 코드에는 넣지 않음) | 145MB → 9MB. 접속은 200 유지 |
+
+Chrome 이 떠 있는 프로필은 정리하지 않습니다. 종료 뒤 잠금 파일만 남은 경우는 잠금에 적힌 프로세스가
+살아 있는지 확인해 구분합니다.
+
+### 11. 통과 상태의 유지 기간 (진행 중)
+
+`tests/profile_lifetime.py` 로 통과된 프로필 2개를 1시간마다 한 번씩 열어 봅니다 (30분씩 엇갈림).
+보안 확인이나 차단이 나오면 풀지 않고 기록한 뒤 그 프로필의 확인을 끝냅니다.
 
 ```bash
-docker build -t naver-pydoll .
-docker run --rm -v "$PWD/docker-data:/data" naver-pydoll "LG 그램 16인치 5060"
+.venv/bin/python tests/profile_lifetime.py chrome-profile chrome-profile-b:win32
 ```
 
-Apple Silicon Mac 의 Docker(Linux arm64, Chromium 156)에서 시험했습니다.
+| 프로필 | 신원 | 통과 시점 | 지금까지 |
+| --- | --- | --- | --- |
+| A | macOS | 2026-11-26 | 2026-11-27 시작 시점에 200 (통과 후 약 하루) |
+| B | Windows (Mac 에서) | 2026-11-27 | 확인 시작 |
 
-| 시험 | 결과 |
-| --- | --- |
-| 이미지 빌드, 컨테이너 안에서 브라우저 실행 | 성공 |
-| 컨테이너 안 핑거프린트 적용 (example.com) | Linux 프로필 값대로 읽힘, `webdriver: False` |
-| 컨테이너에서 네이버 가격비교 접속 (새 프로필) | **HTTP 418 차단** (보안 확인 화면이 아니라 접속 제한) |
-| 같은 시각·같은 IP, Mac 새 프로필 | HTTP 405 (보안 확인) |
-| 같은 시각·같은 IP, Mac 통과한 프로필 | HTTP 200 |
-| Mac 의 Chrome 에 Linux 프로필만 적용 (새 프로필) | **HTTP 418 차단** |
-
-마지막 줄이 원인을 가립니다. 같은 기기, 같은 IP, 같은 Chrome 에서 브라우저 신원만 Linux 로 바꾸자
-보안 확인 단계 없이 바로 차단됐습니다. 요청에서 달라진 것은 User-Agent(`X11; Linux x86_64`)와
-`sec-ch-ua-platform`(`"Linux"`)뿐입니다. 즉 **Linux 데스크톱 신원으로는 사람이 풀 기회조차 없이 막힙니다.**
-각 조건은 한 번씩만 시험했습니다.
-
-따라서 지금의 Docker 이미지로는 상품 목록을 받을 수 없습니다. 메신저 전달(`--relay`)은 보안 확인 화면이
-나와야 동작하므로 이 경우에는 쓰이지 않습니다. 컨테이너용 전달 방식(`--relay file`)과 호스트의
-`human_relay.py watch` 는 만들어 두었지만, 보안 확인이 나오지 않아 컨테이너에서는 실행되지 않았습니다.
+결과는 아직 없습니다. 확인하는 접속 자체가 통과 상태를 연장할 수 있으므로, 이 시험이 재는 것은
+"1시간마다 쓰는 프로필"의 유지 기간입니다. 쓰지 않고 둔 프로필의 유지 기간은 따로 재야 합니다.
 
 ## 알려진 문제와 주의 사항
 
 - **Linux 에서는 쓸 수 없습니다.** Linux 신원은 네이버 가격비교에서 바로 차단(HTTP 418)됩니다 (시험 9번).
-  Docker 이미지는 시험 기록용으로 남겨 두었습니다. 실제 수집은 macOS 또는 Windows 기기에서 해야 합니다.
+  실제 수집은 macOS 또는 Windows 기기에서 해야 합니다. Windows 실기기는 아직 시험하지 않았습니다.
 
 - **pydoll 3.0.1의 새 프로필 폴더 버그**: 새 `--user-data-dir` 폴더로 처음 실행하면 종료 단계에서 없는
   `Preferences.backup`을 복원하려다 예외가 나고, Chrome 프로세스가 남아 다음 실행이 실패합니다.

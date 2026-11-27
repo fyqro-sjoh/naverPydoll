@@ -14,6 +14,12 @@ result*.png
 # 메신저 토큰
 .env
 
-# Docker 시험 데이터 (프로필, 결과)
+# 이전 Docker 시험 데이터 (프로필, 결과)
 docker-data/
 relay/
+
+# 프로필 유지 기간 시험 기록
+lifetime-log.jsonl
+lifetime.out
+
+.DS_Store
