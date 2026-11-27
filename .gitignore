@@ -19,7 +19,7 @@ docker-data/
 relay/
 
 # 프로필 유지 기간 시험 기록
-lifetime-log.jsonl
-lifetime.out
+lifetime*.jsonl
+lifetime*.out
 
 .DS_Store

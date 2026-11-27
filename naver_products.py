@@ -43,7 +43,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from human_relay import RELAYS, RelayError, RelayLock, create_relay
-from stealth_visit import launch, needs_human, open_page, setup_console
+from stealth_visit import launch, needs_human, open_page, resolve_proxy, setup_console
 
 SEARCH_URL = 'https://search.shopping.naver.com/search/all?query={query}'
 CATALOG_URL = 'https://search.shopping.naver.com/catalog/{id}'
@@ -452,7 +452,7 @@ def main() -> None:
     )
     parser.add_argument('--headless', action='store_true', help='창 없이 실행')
     parser.add_argument('--user-data-dir', default='chrome-profile', help='유지할 Chrome 프로필')
-    parser.add_argument('--proxy', metavar='URL', help='프록시 주소 (예: socks5://host:port)')
+    parser.add_argument('--proxy', metavar='URL|이름', help='프록시 주소(예: socks5://host:port) 또는 .env 에 적어 둔 이름(예: kr01 → PROXY_KR01)')
     parser.add_argument('--wait-human', type=int, default=300, metavar='SECONDS')
     parser.add_argument(
         '--relay',
@@ -485,7 +485,7 @@ def main() -> None:
             url,
             headless=args.headless,
             user_data_dir=args.user_data_dir,
-            proxy=args.proxy,
+            proxy=resolve_proxy(args.proxy),
             wait_human=args.wait_human,
             # 로컬 필터일 때는 브라우저에서 가격 입력란을 건드리지 않는다.
             min_price=None if args.local_price_filter else args.min_price,

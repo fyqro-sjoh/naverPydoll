@@ -27,16 +27,18 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
 import sys
 import tempfile
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import unquote, urljoin, urlsplit
 
 from pydoll import Chrome, ChromiumOptions
+from pydoll.utils import SOCKS5Forwarder, find_free_port
 
 from fingerprints import (
     LANGUAGES,
@@ -141,13 +143,53 @@ def clean_profile(user_data_dir: str) -> None:
 
 @asynccontextmanager
 async def launch(headless: bool, user_data_dir: str | None = None, proxy: str | None = None):
-    """Chrome 을 띄우고, 끝나면 프로필의 캐시를 정리한다."""
+    """Chrome 을 띄우고, 끝나면 프로필의 캐시를 정리한다.
+
+    계정 인증이 있는 SOCKS5 프록시는 Chrome 이 지원하지 않는다. 이 경우 pydoll 의 로컬 중계
+    (SOCKS5Forwarder)를 띄워 Chrome 은 인증 없는 127.0.0.1 로 붙고, 중계가 대신 인증한다.
+    """
     try:
-        async with Chrome(options=build_options(headless, user_data_dir, proxy)) as browser:
+        async with AsyncExitStack() as stack:
+            parts = urlsplit(proxy) if proxy else None
+            if parts and parts.scheme in ('socks5', 'socks5h') and parts.username:
+                forwarder = SOCKS5Forwarder(
+                    remote_host=parts.hostname,
+                    remote_port=parts.port or 1080,
+                    username=unquote(parts.username),
+                    password=unquote(parts.password or ''),
+                    local_port=find_free_port(),
+                )
+                await stack.enter_async_context(forwarder)
+                proxy = f'socks5://127.0.0.1:{forwarder.local_port}'
+            options = build_options(headless, user_data_dir, proxy)
+            browser = await stack.enter_async_context(Chrome(options=options))
             yield browser
     finally:
         if user_data_dir:
             clean_profile(user_data_dir)
+
+
+def resolve_proxy(value: str | None) -> str | None:
+    """--proxy 값을 프록시 주소로 바꾼다.
+
+    '://' 가 있으면 주소로 보고 그대로 쓴다. 없으면 이름으로 보고 .env(또는 환경 변수)의
+    PROXY_<이름> 값을 읽는다 (kr01 → PROXY_KR01, kr-01 → PROXY_KR_01).
+    계정이 든 주소를 명령줄에 적지 않기 위한 것이다. 주소는 출력하지 않는다.
+    """
+    if not value or '://' in value:
+        return value or None
+    if not re.fullmatch(r'[A-Za-z0-9_-]+', value):
+        raise SystemExit(f'프록시 이름에는 영문, 숫자, -, _ 만 쓸 수 있습니다: {value!r}')
+    from human_relay import load_env  # .env 읽기 (이미 설정된 환경 변수는 덮어쓰지 않는다)
+
+    load_env()
+    key = 'PROXY_' + value.upper().replace('-', '_')
+    address = os.environ.get(key, '').strip()
+    if not address:
+        raise SystemExit(f'.env 에 {key} 가 없습니다. 예: {key}=http://host:port')
+    if '://' not in address:
+        raise SystemExit(f'{key} 값은 http://, socks5:// 같은 방식으로 시작해야 합니다.')
+    return address
 
 
 def build_options(
@@ -394,7 +436,7 @@ def main() -> None:
         metavar='SECONDS',
         help='보안 확인이 뜨면 사람이 창에서 풀 때까지 기다릴 최대 시간 (기본 300, 0 이면 안 기다림)',
     )
-    parser.add_argument('--proxy', metavar='URL', help='프록시 주소 (예: socks5://host:port)')
+    parser.add_argument('--proxy', metavar='URL|이름', help='프록시 주소(예: socks5://host:port) 또는 .env 에 적어 둔 이름(예: kr01 → PROXY_KR01)')
     args = parser.parse_args()
 
     asyncio.run(
@@ -406,7 +448,7 @@ def main() -> None:
             user_data_dir=args.user_data_dir,
             warmup=args.warmup,
             wait_human=args.wait_human,
-            proxy=args.proxy,
+            proxy=resolve_proxy(args.proxy),
         )
     )
 

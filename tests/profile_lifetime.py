@@ -1,12 +1,14 @@
 """통과된 프로필이 얼마나 오래 유지되는지 주기적으로 확인한다.
 
 정해진 간격(기본 1시간)마다 프로필로 검색을 한 번 실행하고 결과를 한 줄씩 기록한다.
-보안 확인(405)이나 차단(418)이 나오면 풀지 않고 그대로 기록한 뒤 그 프로필의 확인을 끝낸다.
+보안 확인(405)이나 차단(418)이 나오면 풀지 않고 그대로 기록한 뒤 그 프로필의 확인을 끝낸다
+(``--keep-going`` 을 주면 끝내지 않고 다음 차례에 다시 본다).
 보안 확인을 자동으로 풀지 않으며, 사람에게 전달하지도 않는다 (유지 기간을 재는 것이 목적).
 
     .venv/bin/python tests/profile_lifetime.py chrome-profile chrome-profile-b:win32
 
 프로필 뒤에 ``:win32`` 를 붙이면 그 프로필은 Windows 신원으로 연다 (만들 때의 신원과 같아야 한다).
+세 번째 칸은 .env 에 적어 둔 프록시 이름이다: ``chrome-profile-kr01::kr01`` (신원 칸은 비워도 된다).
 프로필이 여러 개면 간격 안에서 고르게 나눠 실행한다 (2개, 1시간이면 30분씩 엇갈림).
 
 주의: 확인하는 접속 자체가 통과 상태를 연장할 수 있다. 이 시험이 재는 것은
@@ -26,7 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from naver_products import build_url, fetch  # noqa: E402
-from stealth_visit import setup_console  # noqa: E402
+from stealth_visit import resolve_proxy, setup_console  # noqa: E402
 
 
 def now() -> str:
@@ -39,17 +41,17 @@ def append(log: Path, record: dict) -> None:
     print(json.dumps(record, ensure_ascii=False), flush=True)
 
 
-async def check(profile: str, identity: str, url: str) -> dict:
+async def check(profile: str, identity: str, proxy: str, url: str) -> dict:
     """프로필로 검색을 한 번 실행한다. 보안 확인이 나와도 풀지 않는다."""
     if identity:
         os.environ['FINGERPRINT_OS'] = identity
     else:
         os.environ.pop('FINGERPRINT_OS', None)
     started = time.monotonic()
-    record = {'time': now(), 'profile': profile, 'identity': identity or 'host'}
+    record = {'time': now(), 'profile': profile, 'identity': identity or 'host', 'proxy': proxy or 'direct'}
     try:
         total, products = await fetch(
-            url, headless=True, user_data_dir=profile, proxy=None, wait_human=0
+            url, headless=True, user_data_dir=profile, proxy=resolve_proxy(proxy), wait_human=0
         )
         record.update(ok=True, status=200, total=total, count=len(products))
     except SystemExit as error:
@@ -66,35 +68,43 @@ async def check(profile: str, identity: str, url: str) -> dict:
 async def main() -> None:
     setup_console()
     parser = argparse.ArgumentParser(description='통과된 프로필의 유지 기간 확인')
-    parser.add_argument('profiles', nargs='+', help='프로필 폴더. 뒤에 :win32 를 붙이면 Windows 신원')
+    parser.add_argument('profiles', nargs='+', help='프로필[:신원[:프록시 이름]]. 예: chrome-profile-b:win32, chrome-profile-kr01::kr01')
     parser.add_argument('--query', default='LG 그램 16인치 5060')
     parser.add_argument('--interval', type=int, default=3600, metavar='SECONDS')
     parser.add_argument('--max-hours', type=float, default=168, help='이 시간이 지나면 끝낸다 (기본 7일)')
     parser.add_argument('--log', default='lifetime-log.jsonl')
+    parser.add_argument(
+        '--keep-going',
+        action='store_true',
+        help='보안 확인이나 차단이 나와도 그 프로필의 확인을 끝내지 않고 다음 차례에 다시 본다',
+    )
     args = parser.parse_args()
     if args.interval < 600:
         raise SystemExit('간격은 600초 이상이어야 합니다 (요청 빈도 제한).')
 
     log = Path(args.log)
     url = build_url(args.query, model_only=True)
-    targets = [tuple((item.split(':', 1) + [''])[:2]) for item in args.profiles]
-    for profile, _ in targets:
+    targets = [tuple((item.split(':') + ['', ''])[:3]) for item in args.profiles]
+    for profile, _, proxy in targets:
+        if '/' in proxy:
+            raise SystemExit('프록시는 주소가 아니라 .env 에 적어 둔 이름으로 줍니다.')
+        resolve_proxy(proxy)  # 이름이 .env 에 없으면 시작하기 전에 알린다
         if not Path(profile).is_dir():
             raise SystemExit(f'프로필 폴더가 없습니다: {profile}')
 
     begin = time.monotonic()
     step = args.interval / len(targets)
     # 프로필별 다음 실행 시각. 간격 안에서 고르게 엇갈린다.
-    due = {profile: begin + index * step for index, (profile, _) in enumerate(targets)}
-    identities = dict(targets)
+    due = {profile: begin + index * step for index, (profile, _, _) in enumerate(targets)}
+    settings = {profile: (identity, proxy) for profile, identity, proxy in targets}
     append(log, {'time': now(), 'event': 'start', 'profiles': args.profiles, 'interval': args.interval})
 
     while due and time.monotonic() - begin < args.max_hours * 3600:
         profile = min(due, key=due.get)
         await asyncio.sleep(max(0, due[profile] - time.monotonic()))
-        record = await check(profile, identities[profile], url)
+        record = await check(profile, *settings[profile], url)
         append(log, record)
-        if record.get('stop'):
+        if record.get('stop') and not args.keep_going:
             # 405(보안 확인), 418(차단), 목록을 찾지 못함: 더 접속하지 않고 이 프로필의 확인을 끝낸다.
             append(log, {'time': now(), 'event': 'stopped', 'profile': profile, 'status': record['status']})
             del due[profile]
