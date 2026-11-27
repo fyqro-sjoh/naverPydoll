@@ -29,13 +29,30 @@ def summarize(path: Path) -> str:
     checks = [r for r in records if 'profile' in r and 'event' not in r]
     if not checks:
         return f'유지 기간 확인 기록이 비어 있습니다: {path.name}'
-    starts = [r for r in records if r.get('event') == 'start']
-    interval = starts[-1]['interval'] if starts else None
+    # 간격은 도중에 바뀔 수 있다 (프로세스를 다시 띄울 때마다 start 기록이 남는다).
+    # 각 확인 기록에 그 시점의 간격을 붙여 둔다.
+    interval = None
+    changes = []  # (바뀐 시각, 간격)
+    for r in records:
+        if r.get('event') == 'start':
+            if r['interval'] != interval:
+                changes.append((r['time'], r['interval']))
+            interval = r['interval']
+        elif 'profile' in r and 'event' not in r:
+            r['_interval'] = interval
+    if len(changes) == 1:
+        pace = f', 프로필당 {changes[0][1] // 60}분 간격'
+    elif changes:
+        pace = ', 프로필당 ' + ' → '.join(
+            f'{sec // 60}분 간격' + (f'({clock(when)}부터)' if index else '')
+            for index, (when, sec) in enumerate(changes)
+        )
+    else:
+        pace = ''
 
     lines = [
         '*네이버 프로필 유지 기간 확인 결과*',
-        f'기간: {clock(checks[0]["time"])} ~ {clock(checks[-1]["time"])}'
-        + (f', 프로필당 {interval // 60}분 간격' if interval else ''),
+        f'기간: {clock(checks[0]["time"])} ~ {clock(checks[-1]["time"])}' + pace,
     ]
     profiles = sorted({r['profile'] for r in checks})
     for profile in profiles:
@@ -51,6 +68,12 @@ def summarize(path: Path) -> str:
         lines.append('')
         lines.append(f'*{profile}* (프록시 {first.get("proxy", "direct")}, 신원 {first.get("identity")})')
         lines.append(f'• 확인 {len(mine)}회: {parts}')
+        if len(changes) > 1:
+            for _, sec in changes:
+                part = [r for r in mine if r.get('_interval') == sec]
+                if part:
+                    ok = sum(1 for r in part if r['status'] == 200)
+                    lines.append(f'  - {sec // 60}분 간격 구간: {len(part)}회 중 정상 {ok}회')
 
         blocked = [r for r in mine if r['status'] in (405, 418) or (r['status'] is None and r.get('stop'))]
         if blocked:
@@ -85,7 +108,9 @@ def summarize(path: Path) -> str:
             gaps = []
             for before, after in zip(mine, mine[1:]):
                 gap = (datetime.fromisoformat(after['time']) - datetime.fromisoformat(before['time'])).total_seconds()
-                if gap > interval * 1.5:
+                # 간격이 바뀐 경계에서는 더 긴 쪽을 기준으로 본다.
+                expected = max(before.get('_interval') or interval, after.get('_interval') or interval)
+                if gap > expected * 1.5:
                     gaps.append(f'{clock(before["time"])}~{clock(after["time"])}')
             if gaps:
                 lines.append(f'• 확인이 빠진 구간 {len(gaps)}곳: ' + ', '.join(gaps[:6]) + (' …' if len(gaps) > 6 else ''))
